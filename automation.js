@@ -152,19 +152,39 @@
   }
 
   function detectTopicLines(syllabus) {
-    const lines = String(syllabus||'').split(/\r?\n/).map(x=>x.replace(/^\s*[•*-]\s*/, '').trim()).filter(x=>x.length>5 && x.length<260);
-    const unitPattern = /^(unit|module|section)\s*([a-d1-9ivx]+)?\s*[:.\-–]?/i;
-    const topics = [];
-    let currentUnit = '';
-    lines.forEach(line => {
-      if (unitPattern.test(line)) { currentUnit = line; return; }
-      if (/^(course outcomes?|course objectives?|text ?books?|reference books?|contents|syllabus)$/i.test(line)) return;
-      if (/^\d+(\.\d+)*[.)]?\s+/.test(line) || /^[A-Z][A-Za-z &/()–-]{4,90}$/.test(line) || /;|,/.test(line)) {
-        const cleaned = line.replace(/^\d+(\.\d+)*[.)]?\s+/, '').trim();
-        if (cleaned.length>5 && !topics.some(t=>t.topic===cleaned)) topics.push({unit:currentUnit,topic:cleaned});
+    let raw=String(syllabus||'').replace(/\r/g,'\n');
+    // Recover unit boundaries even when PDF extraction has flattened paragraphs.
+    raw=raw.replace(/\s+(?=(?:UNIT|MODULE|SECTION)\s+(?:[A-D]|[IVX]+|\d+)\b)/gi,'\n');
+    const lines=raw.split(/\n+/).map(x=>x.replace(/[•▪●]/g,' ').trim()).filter(Boolean);
+    const topics=[]; let currentUnit=''; let active=false;
+    const stop=/^(course objectives?|course outcomes?|text ?books?|reference books?|references|evaluation scheme|assessment|prerequisites|syllabus|contents|learning outcomes?)\b/i;
+    const unit=/^(unit|module|section)\s*([a-d]|[ivx]+|\d+)\s*[:.\-–]?\s*(.*)$/i;
+    const add=(value)=>{
+      let v=value.replace(/^[-*•\d]+[.)\s-]*/,'').replace(/\s+/g,' ').trim();
+      v=v.replace(/^(topics? covered|contents?)\s*[:\-]?\s*/i,'').trim();
+      if(v.length<5||v.length>220||stop.test(v)) return;
+      if(/^(lecture|page|course code|semester|manav rachna|unit wise)/i.test(v)) return;
+      if(!topics.some(t=>norm(t.topic)===norm(v))) topics.push({unit:currentUnit||'Unit to verify',topic:v});
+    };
+    for(const line0 of lines){
+      const line=line0.replace(/\s+/g,' ').trim();
+      const m=line.match(unit);
+      if(m){currentUnit=line;active=true;if(m[3]) m[3].split(/;|\u2022/).forEach(add);continue;}
+      if(stop.test(line)){active=false;continue;}
+      if(!active && !/^\d+(?:\.\d+)*[.)]?\s+/.test(line) && !/^[-•]/.test(line)) continue;
+      if(line.length>260){
+        const pieces=line.split(/;|\u2022|(?<=\.)\s+(?=[A-Z][a-z])/);
+        pieces.forEach(add);
+      } else if(/^\d+(?:\.\d+)*[.)]?\s+/.test(line)||/^[-•]/.test(line)||active){
+        add(line);
       }
-    });
-    return topics.slice(0,80);
+    }
+    // Last-resort extraction: numbered topic headings across syllabus formats.
+    if(!topics.length){
+      const matches=raw.match(/\b\d+(?:\.\d+){1,3}\s+[A-Z][^\n;]{4,150}/g)||[];
+      matches.forEach(x=>add(x));
+    }
+    return topics.slice(0,100);
   }
 
   const profiles = [
@@ -222,26 +242,34 @@
   function generateDraft() {
     const syllabus=$('d_syllabus') ? $('d_syllabus').value : '';
     const courseName=$('p_name') ? $('p_name').value : '';
-    if (syllabus.trim().length<80) { $('autoGenerateStatus').textContent='Upload/extract a readable syllabus first.'; return; }
+    if (syllabus.trim().length<40) { $('autoGenerateStatus').textContent='Upload/extract a readable syllabus first. The system needs syllabus topics to generate topic-wise entries.'; return; }
     const topics=detectTopicLines(syllabus);
-    if (!topics.length) { $('autoGenerateStatus').textContent='Syllabus text is present, but topics could not be separated reliably. Please check its headings/format.'; return; }
+    if (!topics.length) { $('autoGenerateStatus').textContent='Syllabus text was found, but unit/topic headings could not be identified. Check that the syllabus includes unit-wise topics, then retry.'; return; }
     const p=profileFor(courseName,syllabus);
     const coText=$('d_cos') ? $('d_cos').value : '';
     const schedule=matchedTimetable({name:courseName,code:$('p_code')?.value||'',semester:$('p_semester')?.value||''});
     const rows=topics.map((t,i)=>{
       const method=p.pedagogy[i%p.pedagogy.length];
       const ict=p.ict[i%p.ict.length];
-      return [i+1,t.unit||'Syllabus unit to verify',t.topic,suggestCO(t.topic,coText),bloom(t.topic),method,ict,'Suggested only — record actual AI use if conducted'].join(' | ');
+      const aiIdea=/program|code|algorithm|data|model|database|network|design|analysis/i.test(t.topic)
+        ? 'AI-assisted example generation followed by faculty/student validation'
+        : 'AI-assisted concept explanation or quiz draft, followed by verification';
+      return {no:i+1,unit:t.unit,topic:t.topic,co:suggestCO(t.topic,coText),bloom:bloom(t.topic),pedagogy:method,ict,ai:aiIdea};
     });
-    const intro='DRAFT — VERIFY TOPIC SEQUENCE, LECTURE DISTRIBUTION, CO MAPPING AND BLOOM LEVELS BEFORE APPROVAL\nLecture | Unit | Topic | CO | Bloom | Innovative Pedagogy (suggested) | ICT Tools (suggested) | AI Integration\n'+rows.join('\n');
-    const lp=$('d_lessonPlan'); if (lp) lp.value=intro;
-    const pedagogy=$('d_pedagogy'); if (pedagogy) pedagogy.value='AUTO-SUGGESTED — verify actual classroom use\n'+[...new Set(topics.map((t,i)=>p.pedagogy[i%p.pedagogy.length]))].join('\n');
-    const ictBox=$('d_ict'); if (ictBox) ictBox.value='AUTO-SUGGESTED — verify tools actually used\n'+[...new Set(topics.map((t,i)=>p.ict[i%p.ict.length]))].join('\n');
-    const ai=$('d_ai'); if (ai) ai.value='Possible AI-supported activities (use only if actually conducted):\n'+topics.slice(0,12).map(t=>'• '+t.topic+': ask an AI assistant for an example, then verify and critique its output.').join('\n');
+    const table=['DRAFT — VERIFY BEFORE TEACHING / APPROVAL','Lecture | Unit | Topic | CO (verify) | Bloom level (verify) | Innovative pedagogy (suggested) | ICT tools (suggested) | AI integration (suggested)',
+      ...rows.map(r=>[r.no,r.unit,r.topic,r.co,r.bloom,r.pedagogy,r.ict,r.ai].join(' | '))].join('\n');
+    const lp=$('d_lessonPlan'); if(lp) lp.value=table;
+    const pedagogy=$('d_pedagogy'); if(pedagogy) pedagogy.value='SUGGESTED PEDAGOGIES — verify which activities were actually conducted\n'+rows.map(r=>r.topic+' → '+r.pedagogy).join('\n');
+    const ictBox=$('d_ict'); if(ictBox) ictBox.value='SUGGESTED ICT TOOLS — verify which tools were actually used\n'+rows.map(r=>r.topic+' → '+r.ict).join('\n');
+    const ai=$('d_ai'); if(ai) ai.value='SUGGESTED AI INTEGRATION — record only activities actually conducted\n'+rows.map(r=>r.topic+' → '+r.ai).join('\n');
     const timetable=$('d_timetable');
-    if (timetable) timetable.value=schedule.length ? 'IMPORTED TIMETABLE MATCHES — VERIFY BEFORE APPROVAL\n'+schedule.map(e=>[e.date||e.day,e.time,e.subject,e.batch,e.room].filter(Boolean).join(' | ')).join('\n') : (timetable.value||'No matching timetable rows found. Import an EduPage/aSc spreadsheet or HTML export.');
+    if(timetable && schedule.length) timetable.value='IMPORTED TIMETABLE MATCHES — VERIFY DATE, BATCH AND PERIOD\n'+schedule.map(e=>[e.date||e.day,e.time,e.subject,e.batch,e.room].filter(Boolean).join(' | ')).join('\n');
+    const panel=$('autoGeneratorPanel');
+    let preview=$('autoGeneratedPreview');
+    if(!preview && panel){preview=document.createElement('div');preview.id='autoGeneratedPreview';panel.appendChild(preview);}
+    if(preview) preview.innerHTML='<div class="auto-status good">Generated '+rows.length+' topic-wise suggestions. These are editable drafts, not evidence of activities actually conducted.</div><div style="overflow-x:auto"><table class="auto-table"><thead><tr><th>Topic</th><th>Pedagogy suggestion</th><th>ICT tools suggestion</th><th>AI integration suggestion</th></tr></thead><tbody>'+rows.map(r=>'<tr><td>'+escHtml(r.topic)+'</td><td>'+escHtml(r.pedagogy)+'</td><td>'+escHtml(r.ict)+'</td><td>'+escHtml(r.ai)+'</td></tr>').join('')+'</tbody></table></div>';
     const status=$('autoGenerateStatus');
-    if (status) status.textContent='Generated '+topics.length+' topic drafts'+(schedule.length?' and matched '+schedule.length+' timetable entries':' (no timetable match found)')+'. Save the course and verify all suggestions.';
+    if(status) status.textContent='Generated '+rows.length+' topic-wise entries for '+courseName+'. Lesson Plan, Pedagogy, ICT and AI fields are now populated. Open the relevant tabs to review and edit.';
   }
 
   function init() {
