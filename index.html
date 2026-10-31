@@ -58,4 +58,4 @@ async function restore(e){let f=e.target.files[0];if(!f)return;try{let x=JSON.pa
 // Auto-fill common OBE reference sections in existing records without replacing any non-empty faculty text.
 let commonChanged=false;courses.forEach(c=>{c.data=c.data||{};Object.keys(COMMON_CURRICULUM).forEach(k=>{if(!c.data[k]||!String(c.data[k]).trim()){c.data[k]=COMMON_CURRICULUM[k];commonChanged=true}})});if(commonChanged)localStorage.setItem(STORE,JSON.stringify(courses));
 render();
-</script></body></html>
+</script><script src="./automation.js"></script></body></html>
